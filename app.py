@@ -1,6 +1,5 @@
-import os
 import logging
-from typing import Union
+from typing import Optional
 
 import mlflow
 import numpy as np
@@ -9,75 +8,94 @@ from pydantic import BaseModel
 
 from config import settings
 
+# =========================================================
+# Load MLflow model
+# =========================================================
 try:
     path_mlflow_model = "./model_for_production/"
     sklearn_pipeline = mlflow.sklearn.load_model(path_mlflow_model)
-except:
-    path_mlflow_model = "/data/model_for_production/"
-    sklearn_pipeline = mlflow.sklearn.load_model(path_mlflow_model)
+    print(f"Successfully loaded model from: {path_mlflow_model}")
 
-app = FastAPI()
+except Exception as e:
+    print(f"Local model load failed: {e}")
+
+    try:
+        path_mlflow_model = "/data/model_for_production/"
+        sklearn_pipeline = mlflow.sklearn.load_model(path_mlflow_model)
+        print(f"Successfully loaded model from: {path_mlflow_model}")
+
+    except Exception as e:
+        print(f"Docker model load failed: {e}")
+        sklearn_pipeline = None
+
+
+# =========================================================
+# FastAPI app
+# =========================================================
+app = FastAPI(
+    title="Water Potability API",
+    version="1.0.0",
+)
+
 logging.basicConfig(level=logging.INFO)
 
 
+# =========================================================
+# Request schema
+# =========================================================
 class WaterPotabilityDataItem(BaseModel):
-    ph: Union[float, None] = np.nan
-    Hardness: Union[float, None] = np.nan
-    Solids: Union[float, None] = np.nan
-    Chloramines: Union[float, None] = np.nan
-    Sulfate: Union[float, None] = np.nan
-    Conductivity: Union[float, None] = np.nan
-    Organic_carbon: Union[float, None] = np.nan
-    Trihalomethanes: Union[float, None] = np.nan
-    Turbidity: Union[float, None] = np.nan
+    ph: Optional[float] = None
+    Hardness: Optional[float] = None
+    Solids: Optional[float] = None
+    Chloramines: Optional[float] = None
+    Sulfate: Optional[float] = None
+    Conductivity: Optional[float] = None
+    Organic_carbon: Optional[float] = None
+    Trihalomethanes: Optional[float] = None
+    Turbidity: Optional[float] = None
 
 
+# =========================================================
+# Prediction helper
+# =========================================================
 def predict_pipeline(data_sample):
-    """
-    ---------
-    Arguments
-    ---------
-    data_sample : np.array
-        a numpy array of shape (num_samples, num_feats)
-
-    -------
-    Returns
-    -------
-    pred_sample : np.array
-        a numpy array of shape (num_samples) with predictions
-    """
     pred_sample = sklearn_pipeline.predict(data_sample)
     return pred_sample
 
 
+# =========================================================
+# Root endpoint
+# =========================================================
+@app.get("/")
+def root():
+    return {
+        "message": "Water Potability API is running",
+        "docs": "/docs",
+    }
+
+
+# =========================================================
+# Info endpoint
+# =========================================================
 @app.get("/info")
 def get_app_info():
-    """
-    -------
-    Returns
-    -------
-    dict_info : dict
-        a dictionary with info to be sent as a response to get request
-    """
-    dict_info = {"app_name": settings.app_name, "version": settings.version}
-    return dict_info
+    return {
+        "app_name": settings.app_name,
+        "version": settings.version,
+    }
 
 
+# =========================================================
+# Prediction endpoint
+# =========================================================
 @app.post("/predict")
 def predict(wpd_item: WaterPotabilityDataItem):
-    """
-    ---------
-    Arguments
-    ---------
-    wpd_item : object
-        an object of type WaterPotabilityDataItem
 
-    -------
-    Returns
-    -------
-    pred_dict : dict
-        a dictionary of prediction to be sent as a response to post request
-    """
+    if sklearn_pipeline is None:
+        return {
+            "error": "Model failed to load"
+        }
+
     wpd_arr = np.array(
         [
             wpd_item.ph,
@@ -89,10 +107,16 @@ def predict(wpd_item: WaterPotabilityDataItem):
             wpd_item.Organic_carbon,
             wpd_item.Trihalomethanes,
             wpd_item.Turbidity,
-        ]
+        ],
+        dtype=float,
     ).reshape(1, -1)
-    logging.info("data sample: %s", wpd_arr)
+
+    logging.info(f"Input sample: {wpd_arr}")
+
     pred_sample = predict_pipeline(wpd_arr)
-    logging.info("Potability prediction: %s", pred_sample)
-    pred_dict = {"Potability": int(pred_sample)}
-    return pred_dict
+
+    logging.info(f"Prediction result: {pred_sample}")
+
+    return {
+        "Potability": int(pred_sample[0])
+    }

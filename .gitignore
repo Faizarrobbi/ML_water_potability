@@ -1,2 +1,7 @@
-__pycache__
-mlruns
+venv/
+__pycache__/
+*.pyc
+mlruns/
+model_for_production/
+node_modules/
+.env
