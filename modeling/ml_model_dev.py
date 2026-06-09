@@ -5,6 +5,7 @@ import argparse
 import warnings
 
 import mlflow
+import yaml 
 import numpy as np
 import lightgbm as lgbm
 
@@ -355,6 +356,7 @@ def train_model(
     print(f"F1 Score : {test_f1:.4f}")
     print(f"Accuracy : {test_acc:.4f}")
 
+    mlflow.set_tracking_uri("http://127.0.0.1:5000")
     mlflow.set_experiment("water_potability")
 
     experiment = mlflow.get_experiment_by_name(
@@ -378,7 +380,7 @@ def train_model(
         mlflow.sklearn.log_model(
     sk_model=cv_best_estimator,
     artifact_path="model",
-    registered_model_name="water_potability"
+    registered_model_name="water_potability",
 )
 
         mlflow.log_params(cv_best_params)
@@ -433,85 +435,28 @@ def init_and_train_model(ARGS):
             bool(ARGS.is_pca),
         )
 
+def load_config():
+    with open("config/train_config.yaml", "r") as f:
+        return yaml.safe_load(f)
 
 def main():
 
-    parser = argparse.ArgumentParser(
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter
-    )
+    config = load_config()
 
-    parser.add_argument(
-        "--file_csv",
-        default="dataset/water_potability.csv",
-        type=str,
-    )
+    class Args:
+        pass
 
-    parser.add_argument(
-        "--is_train",
-        default=1,
-        type=int,
-        choices=[0, 1],
-    )
+    args = Args()
 
-    parser.add_argument(
-        "--classifier_type",
-        default="ada_boost",
-        type=str,
-        choices=[
-            "ada_boost",
-            "log_reg",
-            "random_forest",
-            "svc",
-            "light_gbm",
-        ],
-    )
+    args.file_csv = config["file_csv"]
+    args.classifier_type = config["classifier_type"]
+    args.imputer_type = config["imputer_type"]
+    args.preprocessor_type = config["preprocessor_type"]
+    args.transformer_type = config["transformer_type"]
+    args.is_pca = int(config["is_pca"])
+    args.is_train = 1
 
-    parser.add_argument(
-        "--imputer_type",
-        default="knn",
-        type=str,
-        choices=[
-            "simple",
-            "knn",
-            "iterative",
-        ],
-    )
-
-    parser.add_argument(
-        "--preprocessor_type",
-        default="none",
-        type=str,
-        choices=[
-            "none",
-            "std",
-            "min_max",
-            "norm",
-            "poly",
-            "robust",
-        ],
-    )
-
-    parser.add_argument(
-        "--transformer_type",
-        default="none",
-        type=str,
-        choices=[
-            "none",
-            "power_box_cox",
-            "power_yeo_johnson",
-        ],
-    )
-
-    parser.add_argument(
-        "--is_pca",
-        default=0,
-        type=int,
-        choices=[0, 1],
-    )
-
-    ARGS, _ = parser.parse_known_args()
-
-    init_and_train_model(ARGS)
+    init_and_train_model(args)
 
 
 if __name__ == "__main__":
