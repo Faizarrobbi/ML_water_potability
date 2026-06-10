@@ -1,4 +1,4 @@
-name: MLOps — Full Pipeline
+name: MLOps — VM Runner (managed identity)
 
 on:
   push:
@@ -30,31 +30,8 @@ env:
   IMAGE_NAME: water-potability-api
 
 jobs:
-  validate:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements.txt
-      - name: Syntax check
-        run: |
-          python -m py_compile train.py
-          python -m py_compile app.py
-          python -m py_compile dataset_manager.py
-          python -m py_compile prediction_logger.py
-      - name: Validate config YAML
-        run: |
-          python -c "import yaml; yaml.safe_load(open('config/train.yaml'))"
-          echo "Config valid"
-
   mlops-pipeline:
-    needs: validate
-    runs-on: ubuntu-latest
+    runs-on: self-hosted
 
     steps:
       - name: Checkout repository
@@ -69,27 +46,25 @@ jobs:
             echo "DATASET_VERSION=$(date -u +'%Y-%m-%d_%H%M%S')" >> $GITHUB_OUTPUT
           fi
 
-      - name: Azure login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
+      - name: Azure login via managed identity
+        run: az login --identity
 
-      - name: Upload dataset to Blob Storage
+      - name: Upload dataset to Blob
         run: |
           DATASET_VERSION="${{ steps.version.outputs.DATASET_VERSION }}"
           az storage blob upload \
             --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
             --container-name ${{ env.AZURE_STORAGE_CONTAINER }} \
             --file ${{ env.DATASET_LOCAL_PATH }} \
-            --name "${DATASET_VERSION}/water_potability.csv" \
-            --auth-mode key
+            --name "${DATASET_VERSION}/water_potability.csv"
           az storage blob upload \
             --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
             --container-name ${{ env.AZURE_STORAGE_CONTAINER }} \
             --file ${{ env.DATASET_LOCAL_PATH }} \
             --name "latest_water_potability.csv" \
-            --auth-mode key --overwrite
-          echo "Uploaded: ${DATASET_VERSION}"
+            --overwrite
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
         uses: actions/setup-python@v5
@@ -154,4 +129,4 @@ jobs:
             --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
             --query properties.configuration.ingress.fqdn -o tsv)
           curl -sS --max-time 10 "https://${FQDN}/health" || \
-            echo "Health check failed (deployment may still be starting)"
+            echo "Health check failed"

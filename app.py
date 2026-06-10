@@ -3,6 +3,7 @@ FastAPI application for Water Potability prediction.
 
 Loads model from MLflow Model Registry and serves:
     GET  /
+    GET  /health
     POST /predict
     POST /predict-with-stats
     GET  /prediction-stats
@@ -42,16 +43,21 @@ _prediction_stats = {
     "total_requests_since_start": 0,
     "potable_count": 0,
     "not_potable_count": 0,
+    "probability_sum": 0.0,
     "last_prediction_at": None,
 }
+_daily_counts: dict = {}
+_model_version_counts: dict = {}
 
 # ------------------------------------------------------------------
 # Load model from MLflow Model Registry
 # ------------------------------------------------------------------
 sklearn_pipeline = None
+_model_version_number = None
 _model_info = {
     "model_name": MODEL_NAME,
     "model_stage_or_alias": MODEL_STAGE_OR_ALIAS,
+    "model_version": None,
     "mlflow_run_id": None,
     "dataset_version": DATASET_VERSION,
     "loaded_model_uri": None,
@@ -63,17 +69,17 @@ if MLFLOW_TRACKING_URI:
         mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
         client = mlflow.MlflowClient()
 
-        # Get latest model version in the specified stage
         latest_versions = client.get_latest_versions(MODEL_NAME, stages=[MODEL_STAGE_OR_ALIAS])
         if latest_versions:
             model_version = latest_versions[0]
+            _model_version_number = model_version.version
             model_uri = f"models:/{MODEL_NAME}/{model_version.version}"
             sklearn_pipeline = mlflow.sklearn.load_model(model_uri)
 
+            _model_info["model_version"] = model_version.version
             _model_info["mlflow_run_id"] = model_version.run_id
             _model_info["loaded_model_uri"] = model_uri
 
-            # Try to load dataset_version from the run's model_metadata artifact
             try:
                 artifact_uri = f"runs:/{model_version.run_id}/model_metadata.json"
                 metadata = mlflow.artifacts.load_dict(artifact_uri)
@@ -81,7 +87,7 @@ if MLFLOW_TRACKING_URI:
                 if ds_version:
                     _model_info["dataset_version"] = ds_version
             except Exception:
-                pass  # fallback to env var
+                pass
 
             print(f"Loaded model: {model_uri}")
         else:
@@ -111,6 +117,13 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# ------------------------------------------------------------------
+# Prediction logger
+# ------------------------------------------------------------------
+from prediction_logger import create_prediction_logger
+
+_prediction_logger = create_prediction_logger()
+
 
 # ------------------------------------------------------------------
 # Request / Response schemas
@@ -127,20 +140,15 @@ class WaterPotabilityDataItem(BaseModel):
     Turbidity: Optional[float] = None
 
 
-class PredictionStatsResponse(BaseModel):
-    total_requests_since_start: int
-    potable_count: int
-    not_potable_count: int
-    potable_percentage: float
-    not_potable_percentage: float
-    last_prediction_at: Optional[str]
-
-
 # ------------------------------------------------------------------
 # Prediction helper
 # ------------------------------------------------------------------
-def _predict_item(item: WaterPotabilityDataItem) -> int:
-    """Run pipeline on a single input item and return prediction (0 or 1)."""
+def _predict_item(item: WaterPotabilityDataItem):
+    """Run pipeline on a single input item.
+
+    Returns:
+        (prediction: int, probability: float)
+    """
     arr = np.array(
         [
             item.ph,
@@ -155,19 +163,42 @@ def _predict_item(item: WaterPotabilityDataItem) -> int:
         ],
         dtype=float,
     ).reshape(1, -1)
-    return int(sklearn_pipeline.predict(arr)[0])
+
+    pred = int(sklearn_pipeline.predict(arr)[0])
+
+    try:
+        proba = sklearn_pipeline.predict_proba(arr)[0]
+        probability = float(proba[1])  # probability of class 1 (Potable)
+    except Exception:
+        probability = float(pred)  # fallback if no predict_proba
+
+    return pred, probability
 
 
-def _update_stats(prediction: int):
-    """Update in-memory prediction counters."""
+def _confidence_label(probability: float) -> str:
+    if probability >= 0.9:
+        return "High"
+    elif probability >= 0.7:
+        return "Medium"
+    else:
+        return "Low"
+
+
+def _update_stats(prediction: int, probability: float):
     _prediction_stats["total_requests_since_start"] += 1
     if prediction == 1:
         _prediction_stats["potable_count"] += 1
     else:
         _prediction_stats["not_potable_count"] += 1
-    _prediction_stats["last_prediction_at"] = (
-        datetime.now(timezone.utc).isoformat()
-    )
+    _prediction_stats["probability_sum"] += probability
+    now = datetime.now(timezone.utc)
+    _prediction_stats["last_prediction_at"] = now.isoformat()
+
+    day_key = now.strftime("%Y-%m-%d")
+    _daily_counts[day_key] = _daily_counts.get(day_key, 0) + 1
+
+    mv = _model_version_number or 0
+    _model_version_counts[mv] = _model_version_counts.get(mv, 0) + 1
 
 
 def _get_stats() -> dict:
@@ -175,12 +206,17 @@ def _get_stats() -> dict:
     total = s["total_requests_since_start"]
     potable_pct = (s["potable_count"] / total * 100) if total > 0 else 0.0
     not_potable_pct = (s["not_potable_count"] / total * 100) if total > 0 else 0.0
+    avg_confidence = (s["probability_sum"] / total) if total > 0 else 0.0
     return {
         "total_requests_since_start": total,
         "potable_count": s["potable_count"],
         "not_potable_count": s["not_potable_count"],
         "potable_percentage": round(potable_pct, 2),
         "not_potable_percentage": round(not_potable_pct, 2),
+        "avg_confidence": round(avg_confidence, 4),
+        "current_model_version": _model_version_number,
+        "daily_counts": dict(sorted(_daily_counts.items())),
+        "model_version_counts": dict(sorted(_model_version_counts.items())),
         "last_prediction_at": s["last_prediction_at"],
     }
 
@@ -189,7 +225,6 @@ def _get_stats() -> dict:
 # Jakarta time helper
 # ------------------------------------------------------------------
 def _jakarta_timestamp() -> str:
-    """Return current timestamp in Asia/Jakarta timezone."""
     try:
         import zoneinfo
         tz = zoneinfo.ZoneInfo("Asia/Jakarta")
@@ -209,40 +244,78 @@ def root():
         "status": "running",
         "service": "water-potability-api",
         "model_name": _model_info["model_name"],
+        "model_version": _model_info["model_version"],
         "dataset_version": _model_info["dataset_version"],
+    }
+
+
+@app.get("/health")
+def health():
+    """Health check — returns model load status."""
+    return {
+        "status": "healthy" if sklearn_pipeline is not None else "degraded",
+        "model_loaded": sklearn_pipeline is not None,
+        "model_version": _model_info["model_version"],
     }
 
 
 @app.post("/predict")
 def predict(item: WaterPotabilityDataItem):
-    """Predict potability for a single water sample."""
+    """Predict potability for a single water sample.
+
+    Returns enhanced response with prediction label, probability,
+    confidence level, model version, and timestamp.
+    """
     if sklearn_pipeline is None:
         return {"error": "Model not loaded"}
 
-    pred = _predict_item(item)
-    _update_stats(pred)
+    pred, probability = _predict_item(item)
+    _update_stats(pred, probability)
+    _prediction_logger.log_prediction(
+        timestamp=_jakarta_timestamp(),
+        prediction=pred,
+        probability=probability,
+        confidence=_confidence_label(probability),
+        model_version=_model_version_number or 0,
+        input_data=item.model_dump(),
+    )
 
     return {
         "prediction": pred,
         "label": "Potable" if pred == 1 else "Not Potable",
+        "probability": round(probability, 4),
+        "confidence": _confidence_label(probability),
+        "model_version": _model_version_number,
+        "timestamp": _jakarta_timestamp(),
     }
 
 
 @app.post("/predict-with-stats")
 def predict_with_stats(item: WaterPotabilityDataItem):
-    """
-    Predict and return enriched response with model metadata
+    """Predict and return enriched response with model metadata
     and cumulative prediction statistics.
     """
     if sklearn_pipeline is None:
         return {"error": "Model not loaded"}
 
-    pred = _predict_item(item)
-    _update_stats(pred)
+    pred, probability = _predict_item(item)
+    _update_stats(pred, probability)
+    _prediction_logger.log_prediction(
+        timestamp=_jakarta_timestamp(),
+        prediction=pred,
+        probability=probability,
+        confidence=_confidence_label(probability),
+        model_version=_model_version_number or 0,
+        input_data=item.model_dump(),
+    )
 
     return {
         "prediction": pred,
         "label": "Potable" if pred == 1 else "Not Potable",
+        "probability": round(probability, 4),
+        "confidence": _confidence_label(probability),
+        "model_version": _model_version_number,
+        "timestamp": _jakarta_timestamp(),
         "input_timestamp": _jakarta_timestamp(),
         "model_name": _model_info["model_name"],
         "model_stage_or_alias": _model_info["model_stage_or_alias"],
@@ -252,10 +325,9 @@ def predict_with_stats(item: WaterPotabilityDataItem):
     }
 
 
-@app.get("/prediction-stats", response_model=PredictionStatsResponse)
+@app.get("/prediction-stats")
 def prediction_stats():
-    """
-    Return cumulative prediction statistics since container start.
+    """Return cumulative prediction statistics since container start.
 
     NOTE: For production, store stats in a database or Azure Table Storage
     to persist across container restarts.
@@ -268,6 +340,7 @@ def model_info():
     """Return metadata about the currently loaded model."""
     return {
         "model_name": _model_info["model_name"],
+        "model_version": _model_info["model_version"],
         "model_stage_or_alias": _model_info["model_stage_or_alias"],
         "mlflow_run_id": _model_info["mlflow_run_id"],
         "dataset_version": _model_info["dataset_version"],

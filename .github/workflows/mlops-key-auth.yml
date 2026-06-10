@@ -1,4 +1,4 @@
-name: MLOps — Full Pipeline
+name: MLOps — Key Auth (no service principal)
 
 on:
   push:
@@ -22,12 +22,14 @@ on:
 
 env:
   PYTHON_VERSION: "3.11"
+  AZURE_STORAGE_ACCOUNT: ${{ secrets.AZURE_STORAGE_ACCOUNT }}
   AZURE_STORAGE_CONTAINER: datasets
   MLFLOW_EXPERIMENT_NAME: water-potability-mlops
   MODEL_NAME: water_potability_model
   MODEL_STAGE_OR_ALIAS: Production
   DATASET_LOCAL_PATH: dataset/water_potability.csv
   IMAGE_NAME: water-potability-api
+  ACR_NAME: ${{ secrets.AZURE_ACR_NAME }}
 
 jobs:
   validate:
@@ -69,26 +71,22 @@ jobs:
             echo "DATASET_VERSION=$(date -u +'%Y-%m-%d_%H%M%S')" >> $GITHUB_OUTPUT
           fi
 
-      - name: Azure login
-        uses: azure/login@v2
-        with:
-          creds: ${{ secrets.AZURE_CREDENTIALS }}
-
       - name: Upload dataset to Blob Storage
         run: |
           DATASET_VERSION="${{ steps.version.outputs.DATASET_VERSION }}"
           az storage blob upload \
-            --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
+            --account-name ${{ env.AZURE_STORAGE_ACCOUNT }} \
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
             --container-name ${{ env.AZURE_STORAGE_CONTAINER }} \
             --file ${{ env.DATASET_LOCAL_PATH }} \
-            --name "${DATASET_VERSION}/water_potability.csv" \
-            --auth-mode key
+            --name "${DATASET_VERSION}/water_potability.csv"
           az storage blob upload \
-            --account-name ${{ secrets.AZURE_STORAGE_ACCOUNT }} \
+            --account-name ${{ env.AZURE_STORAGE_ACCOUNT }} \
+            --account-key ${{ secrets.AZURE_STORAGE_KEY }} \
             --container-name ${{ env.AZURE_STORAGE_CONTAINER }} \
             --file ${{ env.DATASET_LOCAL_PATH }} \
             --name "latest_water_potability.csv" \
-            --auth-mode key --overwrite
+            --overwrite
           echo "Uploaded: ${DATASET_VERSION}"
 
       - name: Setup Python ${{ env.PYTHON_VERSION }}
@@ -101,15 +99,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Get MLflow tracking URI
-        id: mlflow
-        run: |
-          URI=$(az ml workspace show \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --name ${{ secrets.AZURE_ML_WORKSPACE }} \
-            --query mlflow_tracking_uri -o tsv)
-          echo "MLFLOW_TRACKING_URI=${URI}" >> $GITHUB_OUTPUT
-
       - name: Train model
         run: |
           python train.py --config config/train.yaml --hyperparameters config/hyperparameters.yaml || \
@@ -117,41 +106,19 @@ jobs:
         env:
           DATASET_PATH: ${{ env.DATASET_LOCAL_PATH }}
           DATASET_VERSION: ${{ steps.version.outputs.DATASET_VERSION }}
-          MLFLOW_TRACKING_URI: ${{ steps.mlflow.outputs.MLFLOW_TRACKING_URI }}
+          MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
           MLFLOW_EXPERIMENT_NAME: ${{ env.MLFLOW_EXPERIMENT_NAME }}
           MODEL_NAME: ${{ env.MODEL_NAME }}
 
-      - name: Login to ACR
-        run: az acr login --name ${{ secrets.AZURE_ACR_NAME }}
-
-      - name: Build and push Docker image
+      - name: Build and push Docker image to ACR
         run: |
-          ACR="${{ secrets.AZURE_ACR_NAME }}.azurecr.io"
+          ACR="${{ env.ACR_NAME }}.azurecr.io"
           SHA_TAG="${ACR}/${{ env.IMAGE_NAME }}:${{ github.sha }}"
           VERSION_TAG="${ACR}/${{ env.IMAGE_NAME }}:${{ steps.version.outputs.DATASET_VERSION }}"
+          docker login ${ACR} \
+            -u "${{ secrets.ACR_USERNAME }}" \
+            -p "${{ secrets.ACR_PASSWORD }}"
           docker build -t ${SHA_TAG} -t ${VERSION_TAG} .
           docker push ${SHA_TAG}
           docker push ${VERSION_TAG}
           echo "IMAGE_TAG=${SHA_TAG}" >> $GITHUB_ENV
-
-      - name: Deploy to Azure Container Apps
-        run: |
-          az containerapp update \
-            --name ${{ secrets.AZURE_CONTAINER_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --image ${{ env.IMAGE_TAG }} \
-            --set-env-vars \
-              MODEL_NAME=${{ env.MODEL_NAME }} \
-              MODEL_STAGE_OR_ALIAS=${{ env.MODEL_STAGE_OR_ALIAS }} \
-              DATASET_VERSION=${{ steps.version.outputs.DATASET_VERSION }} \
-              MLFLOW_TRACKING_URI=${{ steps.mlflow.outputs.MLFLOW_TRACKING_URI }}
-
-      - name: Health check
-        run: |
-          sleep 30
-          FQDN=$(az containerapp show \
-            --name ${{ secrets.AZURE_CONTAINER_APP_NAME }} \
-            --resource-group ${{ secrets.AZURE_RESOURCE_GROUP }} \
-            --query properties.configuration.ingress.fqdn -o tsv)
-          curl -sS --max-time 10 "https://${FQDN}/health" || \
-            echo "Health check failed (deployment may still be starting)"

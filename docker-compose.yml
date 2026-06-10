@@ -1,0 +1,63 @@
+version: "3.8"
+
+services:
+  # --------------- FastAPI ---------------
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: water-potability-api
+    ports:
+      - "5000:5000"
+    env_file:
+      - .env
+    environment:
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow-server:5001}
+      MODEL_NAME: ${MODEL_NAME:-water_potability_model}
+      MODEL_STAGE_OR_ALIAS: ${MODEL_STAGE_OR_ALIAS:-Production}
+      DATASET_VERSION: ${DATASET_VERSION:-compose_local}
+    depends_on:
+      mlflow-server:
+        condition: service_started
+    restart: unless-stopped
+
+  # --------------- MLflow Tracking Server (local dev) ---------------
+  mlflow-server:
+    image: python:3.11-slim
+    container_name: mlflow-server
+    ports:
+      - "5001:5001"
+    volumes:
+      - ./mlruns:/mlruns
+      - ./mlflow.db:/mlflow.db
+    working_dir: /app
+    command: >
+      sh -c "pip install --no-cache-dir mlflow==2.12.2 &&
+             mlflow server
+               --backend-store-uri sqlite:////mlflow.db
+               --default-artifact-root /mlruns
+               --host 0.0.0.0
+               --port 5001"
+    restart: unless-stopped
+
+  # --------------- Training (one-shot) ---------------
+  train:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: water-potability-train
+    env_file:
+      - .env
+    environment:
+      DATASET_PATH: /app/dataset/water_potability.csv
+      DATASET_VERSION: ${DATASET_VERSION:-compose_train}
+      MLFLOW_TRACKING_URI: ${MLFLOW_TRACKING_URI:-http://mlflow-server:5001}
+      MLFLOW_EXPERIMENT_NAME: ${MLFLOW_EXPERIMENT_NAME:-water-potability-mlops}
+      MODEL_NAME: ${MODEL_NAME:-water_potability_model}
+    command: >
+      sh -c "python train.py --config config/train.yaml"
+    depends_on:
+      mlflow-server:
+        condition: service_started
+    profiles:
+      - train

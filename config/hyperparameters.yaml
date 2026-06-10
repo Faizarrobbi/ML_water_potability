@@ -1,0 +1,127 @@
+# ==========================================================
+# Hyperparameter Search Spaces
+# Usage: python train.py --config config/train.yaml --hyperparameters config/hyperparameters.yaml
+#
+# Each classifier type has its own parameter grid.
+# Adding a new model type here automatically enables grid search
+# without editing Python code.
+# ==========================================================
+
+# --- Classifier hyperparameters ---
+
+random_forest:
+  n_estimators:
+    - 100
+    - 200
+  criterion:
+    - gini
+    - entropy
+  max_depth:
+    - null
+    - 10
+    - 25
+  min_samples_leaf:
+    - 1
+    - 5
+  min_samples_split:
+    - 2
+    - 5
+
+ada_boost:
+  learning_rate:
+    - 0.01
+    - 0.05
+    - 0.1
+  n_estimators:
+    - 50
+    - 100
+    - 200
+
+log_reg:
+  penalty:
+    - l1
+    - l2
+  C:
+    - 0.1
+    - 0.5
+    - 1
+    - 2
+  class_weight:
+    - null
+    - balanced
+
+svc:
+  C:
+    - 0.5
+    - 1
+    - 2
+  kernel:
+    - linear
+    - rbf
+
+light_gbm:
+  num_leaves:
+    - 31
+    - 63
+  learning_rate:
+    - 0.01
+    - 0.05
+    - 0.1
+  n_estimators:
+    - 100
+    - 300
+  reg_lambda:
+    - 0.1
+    - 1.0
+  min_data_in_leaf:
+    - 20
+    - 50
+
+# --- Imputer hyperparameters ---
+
+simple:
+  strategy:
+    - mean
+    - median
+
+knn:
+  n_neighbors:
+    - 5
+    - 7
+  weights:
+    - uniform
+    - distance
+
+iterative:
+  initial_strategy:
+    - mean
+    - median
+
+# --- Preprocessor hyperparameters ---
+
+norm:
+  norm:
+    - l1
+    - l2
+
+poly:
+  degree:
+    - 2
+  interaction_only:
+    - true
+    - false
+  include_bias:
+    - false
+
+# --- PCA hyperparameters ---
+
+pca:
+  n_components:
+    - 2
+    - 3
+    - 4
+    - 5
+    - 6
+    - 7
+    - 8
+    - 9

@@ -1,0 +1,41 @@
+# ==========================================================
+# Water Potability MLOps Training Configuration
+# Usage: python train.py --config config/train.yaml
+# ==========================================================
+
+# Path to training dataset
+file_csv: dataset/water_potability.csv
+
+# Target column name
+target_column: Potability
+
+# Train/test split ratio
+test_size: 0.2
+
+# Random seed for reproducibility
+random_state: 42
+
+# --- Pipeline Components ---
+
+# Classifier type
+# Available: ada_boost, log_reg, random_forest, svc, light_gbm
+classifier_type: random_forest
+
+# Imputer for missing values
+# Available: simple, knn, iterative
+imputer_type: knn
+
+# Preprocessor / feature scaling
+# Available: none, std, min_max, norm, poly, robust
+preprocessor_type: none
+
+# Feature transformation
+# Available: none, power_box_cox, power_yeo_johnson
+transformer_type: none
+
+# Enable PCA dimensionality reduction (true/false)
+is_pca: false
+
+# Fetch dataset from Azure Blob before training (true/false)
+# Requires AZURE_STORAGE_CONNECTION_STRING or AZURE_STORAGE_ACCOUNT env vars
+use_blob_dataset: false

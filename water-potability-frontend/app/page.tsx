@@ -3,6 +3,8 @@
 import { useState } from "react";
 import axios from "axios";
 
+const API_URL = process.env.NEXT_PUBLIC_API_URL || "http://localhost:5000";
+
 const fieldMeta = [
   { key: "ph",              label: "pH",              icon: "⚗️", unit: "0–14 scale",   placeholder: "e.g. 7.2"   },
   { key: "Hardness",        label: "Hardness",        icon: "💎", unit: "mg/L",         placeholder: "e.g. 204"   },
@@ -54,10 +56,10 @@ export default function Home() {
       const payload = Object.fromEntries(
         fieldMeta.map((f) => [f.key, parseFloat(formData[f.key as keyof FormData])])
       );
-      const response = await axios.post("http://localhost:8000/predict", payload);
-      setPrediction(response.data.Potability);
+      const response = await axios.post(`${API_URL}/predict`, payload);
+      setPrediction(response.data.prediction);
     } catch {
-      setError("Could not reach the FastAPI backend. Make sure it's running on localhost:8000.");
+      setError("Could not reach the backend. Make sure the API is running.");
     } finally {
       setLoading(false);
     }
